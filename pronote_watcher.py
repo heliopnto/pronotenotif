@@ -174,7 +174,7 @@ def login() -> pronotepy.Client:
     client = pronotepy.Client(
         PRONOTE_URL,
         username="helio.pintooliveira",   # ← ton identifiant ENT (ex: p.dupont1)
-        password="Aqzsedwrfx741852963.",   # ← ton mot de passe ENT
+        password="rpc4nvd4",   # ← ton mot de passe ENT
         ent=ent_hdf 
     )
     if not client.logged_in:
