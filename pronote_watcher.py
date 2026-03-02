@@ -173,7 +173,7 @@ def login() -> pronotepy.Client:
     log.info("Connexion à Pronote...")
     client = pronotepy.Client(
         PRONOTE_URL,
-        username="h.pintooliveir",   # ← ton identifiant ENT (ex: p.dupont1)
+        username="helio.pintooliveira",   # ← ton identifiant ENT (ex: p.dupont1)
         password="Aqzsedwrfx741852963.",   # ← ton mot de passe ENT
         ent=ent_hdf 
     )
