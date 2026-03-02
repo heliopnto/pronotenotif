@@ -173,9 +173,9 @@ def login() -> pronotepy.Client:
     log.info("Connexion à Pronote...")
     client = pronotepy.Client(
         PRONOTE_URL,
-        username="helio.pintooliveira",   # ← ton identifiant ENT (ex: p.dupont1)
-        password="rpc4nvd4",   # ← ton mot de passe ENT
-        ent=ent_hdf 
+        username="h.pintooliveir",   # ← ton identifiant ENT (ex: p.dupont1)
+        password="Aqzsedwrfx741852963.",   # ← ton mot de passe ENT
+        ent=educonnect 
     )
     if not client.logged_in:
         raise ConnectionError("Échec de connexion. Vérifie l'URL et tes identifiants.")
