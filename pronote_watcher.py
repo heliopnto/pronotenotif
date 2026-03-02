@@ -8,6 +8,8 @@ Installation :
 """
 
 import time
+import json
+import os
 import logging
 import requests
 import pronotepy
@@ -21,9 +23,9 @@ from pronotepy.ent import ent_hdf
 CREDENTIALS = {
   "pronote_url": "https://0620042j.index-education.net/pronote/mobile.eleve.html?fd=1&bydlg=A6ABB224-12DD-4E31-AD3E-8A39A1C2C335&login=true",
   "username": "hpintooliveira",
-  "password": "F196A7A85B8C4C2328D75A6EC7A596934D8C4612F1E818C43E8D337167345DAB786FDA5F6AA1D4C6423CED68C4DCB815",
-  "client_identifier": "9F8854672ECFDC0D266A3EB05D4AEC4D5AEC9F65049C3E7E3E96AB442F832B2999402A589431E05CFA69E2AB7438910037F382D700000000",
-  "uuid": "f6fa999eb1887664"
+  "password": "3B796DDB49EFCEFA8642869178D1C2C48F39FCEE7F40F1AC38BDCBB273D7C38717DC90693885360CBB22E7EFB9715508",
+  "client_identifier": "DE058E742F83D0E95F14E6C715CF29820B5899A0487DE3F2C1E9607A2D823700F0AF27D93D0B6AE0503CE82D6BB9F945BD03C0FB00000000",
+  "uuid": "fb8414898db30776"
 }
 
 # Ton topic ntfy.sh (même nom que dans l'app iPhone)
@@ -31,6 +33,8 @@ NTFY_TOPIC = "alerte_pronote"
 
 # Vérification toutes les X secondes
 CHECK_INTERVAL = 60
+
+CREDS_FILE = "credentials.json"
 
 # ─────────────────────────────────────────────
 
@@ -47,10 +51,32 @@ log = logging.getLogger(__name__)
 # Mémorise les cours déjà notifiés pour éviter les doublons
 already_notified: set = set()
 
+# ─────────────────────────────────────────────
+# LOAD CRED
+# ─────────────────────────────────────────────
+
+def load_credentials():
+    """Charge les credentials depuis le fichier si présent."""
+    if os.path.exists(CREDS_FILE):
+        with open(CREDS_FILE, "r", encoding="utf-8") as f:
+            log.info("🔄 Chargement des credentials sauvegardés.")
+            return json.load(f)
+    else:
+        log.info("📂 Aucun credentials sauvegardé, utilisation des credentials initiaux.")
+        return CREDENTIALS.copy()
+
+
+def save_credentials(creds: dict):
+    """Sauvegarde les credentials dans un fichier JSON."""
+    with open(CREDS_FILE, "w", encoding="utf-8") as f:
+        json.dump(creds, f, indent=2)
+    log.info("💾 Credentials mis à jour et sauvegardés.")
+    log.info(f"💾 Sauvegarde credentials dans : {os.path.abspath(CREDS_FILE)}")
+
 
 # ─────────────────────────────────────────────
 # NOTIFICATIONS
-# ─────────────────────────────────────────────
+# ────────────────────────────────────────────
 
 def send_notification(title: str, message: str, priority: str = "high"):
     """Envoie une notification push via ntfy.sh."""
@@ -178,19 +204,21 @@ def check_cancellations(client: pronotepy.Client):
 
 def login() -> pronotepy.Client:
     log.info("Connexion à Pronote via token...")
-    
-    client = pronotepy.Client.token_login(**CREDENTIALS)
+
+    try:
+        creds = load_credentials()
+        client = pronotepy.Client.token_login(**creds)
+    except Exception:
+        log.warning("Credentials sauvegardés invalides, tentative avec credentials initiaux.")
+        client = pronotepy.Client.token_login(**CREDENTIALS)
 
     if not client.logged_in:
         raise ConnectionError("Échec de connexion via token.")
 
     log.info(f"✅ Connecté en tant que : {client.info.name}")
 
-    # ⚠️ IMPORTANT : exporter les nouveaux credentials
     new_creds = client.export_credentials()
-
-    # On met à jour les credentials en mémoire
-    CREDENTIALS.update(new_creds)
+    save_credentials(new_creds)
 
     return client
 
