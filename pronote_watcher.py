@@ -55,11 +55,14 @@ already_notified: set = set()
 def send_notification(title: str, message: str, priority: str = "high"):
     """Envoie une notification push via ntfy.sh."""
     try:
+        # On enlève les emojis du header (ASCII only)
+        safe_title = title.encode("ascii", "ignore").decode()
+
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={
-                "Title": title,
+                "Title": safe_title,
                 "Priority": priority,
                 "Tags": "school,warning",
             },
