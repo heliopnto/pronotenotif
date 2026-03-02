@@ -12,6 +12,7 @@ import logging
 import requests
 import pronotepy
 from datetime import date, datetime, timedelta
+from pronotepy.ent import ent_hdf
 
 # ─────────────────────────────────────────────
 # ⚙️  CONFIG — À MODIFIER AVANT DE LANCER
@@ -172,8 +173,9 @@ def login() -> pronotepy.Client:
     log.info("Connexion à Pronote...")
     client = pronotepy.Client(
         PRONOTE_URL,
-        username=PRONOTE_USER,
-        password=PRONOTE_PASS
+        username=PRONOTE_USER,   # ← ton identifiant ENT (ex: p.dupont1)
+        password=PRONOTE_PASS,   # ← ton mot de passe ENT
+        ent=ent_hdf 
     )
     if not client.logged_in:
         raise ConnectionError("Échec de connexion. Vérifie l'URL et tes identifiants.")
