@@ -19,11 +19,11 @@ from pronotepy.ent import ent_hdf
 # ─────────────────────────────────────────────
 
 CREDENTIALS = {
-    "pronote_url": "https://0620042j.index-education.net/pronote/mobile.eleve.html?fd=1&bydlg=A6ABB224-12DD-4E31-AD3E-8A39A1C2C335&login=true",
-    "username": "hpintooliveira",
-    "password": "4F03A732FCFB8DFDD5A20CEC011D7750E5BAA62CFE9D5439BE16A6E246C3F0DE38827DF5DAAFFF44044405A1CF935698",
-    "client_identifier": "46A26DC595C677066372732118702043034EEC3E97EA4D35D138437BFFBA7FB5DDE3AA129EE889D6A0CE8C93D2F0A999F32B9F8000000000",
-    "uuid": "cb1143ffaac01171"
+  "pronote_url": "https://0620042j.index-education.net/pronote/mobile.eleve.html?fd=1&bydlg=A6ABB224-12DD-4E31-AD3E-8A39A1C2C335&login=true",
+  "username": "hpintooliveira",
+  "password": "F196A7A85B8C4C2328D75A6EC7A596934D8C4612F1E818C43E8D337167345DAB786FDA5F6AA1D4C6423CED68C4DCB815",
+  "client_identifier": "9F8854672ECFDC0D266A3EB05D4AEC4D5AEC9F65049C3E7E3E96AB442F832B2999402A589431E05CFA69E2AB7438910037F382D700000000",
+  "uuid": "f6fa999eb1887664"
 }
 
 # Ton topic ntfy.sh (même nom que dans l'app iPhone)
