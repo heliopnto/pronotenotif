@@ -18,9 +18,13 @@ from pronotepy.ent import ent_hdf
 # ⚙️  CONFIG — À MODIFIER AVANT DE LANCER
 # ─────────────────────────────────────────────
 
-PRONOTE_URL  = "https://0620042j.index-education.net/pronote/eleve.html"
-PRONOTE_USER = "h.pintooliveir"
-PRONOTE_PASS = "Aqzsedwrfx741852963."
+CREDENTIALS = {
+    "pronote_url": "https://0620042j.index-education.net/pronote/mobile.eleve.html?fd=1&bydlg=A6ABB224-12DD-4E31-AD3E-8A39A1C2C335&login=true",
+    "username": "hpintooliveira",
+    "password": "4F03A732FCFB8DFDD5A20CEC011D7750E5BAA62CFE9D5439BE16A6E246C3F0DE38827DF5DAAFFF44044405A1CF935698",
+    "client_identifier": "46A26DC595C677066372732118702043034EEC3E97EA4D35D138437BFFBA7FB5DDE3AA129EE889D6A0CE8C93D2F0A999F32B9F8000000000",
+    "uuid": "cb1143ffaac01171"
+}
 
 # Ton topic ntfy.sh (même nom que dans l'app iPhone)
 NTFY_TOPIC = "alerte_pronote"
@@ -170,18 +174,22 @@ def check_cancellations(client: pronotepy.Client):
 # ─────────────────────────────────────────────
 
 def login() -> pronotepy.Client:
-    log.info("Connexion à Pronote...")
-    client = pronotepy.Client(
-        PRONOTE_URL,
-        username="h.pintooliveir",   # ← ton identifiant ENT (ex: p.dupont1)
-        password="Aqzsedwrfx741852963.",   # ← ton mot de passe ENT
-        ent=educonnect 
-    )
-    if not client.logged_in:
-        raise ConnectionError("Échec de connexion. Vérifie l'URL et tes identifiants.")
-    log.info(f"✅ Connecté en tant que : {client.info.name}")
-    return client
+    log.info("Connexion à Pronote via token...")
+    
+    client = pronotepy.Client.token_login(**CREDENTIALS)
 
+    if not client.logged_in:
+        raise ConnectionError("Échec de connexion via token.")
+
+    log.info(f"✅ Connecté en tant que : {client.info.name}")
+
+    # ⚠️ IMPORTANT : exporter les nouveaux credentials
+    new_creds = client.export_credentials()
+
+    # On met à jour les credentials en mémoire
+    CREDENTIALS.update(new_creds)
+
+    return client
 
 # ─────────────────────────────────────────────
 # BOUCLE PRINCIPALE
