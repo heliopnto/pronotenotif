@@ -161,7 +161,7 @@ def check_cancellations(client: pronotepy.Client):
         teacher   = lesson.teacher_name if hasattr(lesson, "teacher_name") and lesson.teacher_name else "Prof inconnu"
         classroom = ", ".join(lesson.classrooms) if lesson.classrooms else "N/A"
 
-        title   = f"{emoji} {label}"
+        title = label
         message = (
             f"📚 {subject_name} ({start_fmt}–{end_fmt})\n"
             f"👤 {teacher}\n"
@@ -211,7 +211,7 @@ def main():
         return
 
     send_notification(
-        "✅ Pronote Watcher actif",
+        "Pronote Watcher actif",
         "Surveillance lancée. Tu seras alerté en cas d'annulation, cours déplacé ou changement de salle.",
         priority="low"
     )
