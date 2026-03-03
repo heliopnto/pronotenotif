@@ -273,13 +273,19 @@ def watcher_loop():
                     send_notification("⚠️ <b>Pronote Watcher</b>\nReconnexion impossible. Vérification arrêtée.")
                     break
         time.sleep(CHECK_INTERVAL)
-
+        
+def start_watcher():
+    t = threading.Thread(target=watcher_loop, daemon=True)
+    t.start()
+    log.info("🚀 Thread de surveillance démarré.")
 
 # ─────────────────────────────────────────────
 # SERVEUR HTTP (requis par Render)
 # ─────────────────────────────────────────────
 
 app = Flask(__name__)
+
+start_watcher()
 
 @app.route("/")
 def index():
@@ -376,6 +382,5 @@ def test_pronote():
 
 
 if __name__ == "__main__":
-    threading.Thread(target=watcher_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
