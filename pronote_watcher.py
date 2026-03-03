@@ -283,11 +283,96 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return {"status": "ok", "message": "Pronote Watcher tourne"}, 200
+    return """
+    <html>
+    <head>
+        <title>Pronote Watcher</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body { font-family: sans-serif; max-width: 500px; margin: 60px auto; padding: 20px; background: #f5f5f5; }
+            h1 { color: #333; }
+            .status { background: #d4edda; border-radius: 8px; padding: 12px 16px; margin-bottom: 24px; color: #155724; font-weight: bold; }
+            .btn { display: inline-block; padding: 12px 24px; background: #0088cc; color: white; border-radius: 8px; text-decoration: none; font-size: 16px; cursor: pointer; border: none; width: 100%; box-sizing: border-box; text-align: center; font-size: 15px; margin-bottom: 10px; }
+            .btn:hover { background: #006fa8; }
+            .btn.green { background: #28a745; }
+            .btn.green:hover { background: #1e7e34; }
+            #result { margin-top: 20px; padding: 12px 16px; border-radius: 8px; display: none; }
+            .ok  { background: #d4edda; color: #155724; }
+            .err { background: #f8d7da; color: #721c24; }
+        </style>
+    </head>
+    <body>
+        <h1>📅 Pronote Watcher</h1>
+        <div class="status">✅ Service en ligne</div>
+
+        <a href="/test/telegram" class="btn">
+            📱 Tester la notification Telegram
+        </a>
+        <a href="/test/pronote" class="btn green">
+            🎓 Tester la connexion Pronote
+        </a>
+
+        <div id="result"></div>
+
+        <script>
+            document.querySelectorAll('.btn').forEach(btn => {
+                btn.addEventListener('click', async function(e) {
+                    e.preventDefault();
+                    const url = this.getAttribute('href');
+                    const res = document.getElementById('result');
+                    res.style.display = 'none';
+                    this.textContent = '⏳ Test en cours...';
+                    const btn = this;
+                    try {
+                        const r = await fetch(url);
+                        const data = await r.json();
+                        res.className = data.ok ? 'ok' : 'err';
+                        res.textContent = data.message;
+                        res.style.display = 'block';
+                    } catch(err) {
+                        res.className = 'err';
+                        res.textContent = 'Erreur réseau : ' + err;
+                        res.style.display = 'block';
+                    }
+                    btn.textContent = btn.href.includes('telegram') ? '📱 Tester la notification Telegram' : '🎓 Tester la connexion Pronote';
+                });
+            });
+        </script>
+    </body>
+    </html>
+    """, 200
 
 @app.route("/health")
 def health():
     return {"status": "healthy"}, 200
+
+@app.route("/test/telegram")
+def test_telegram():
+    try:
+        today     = date.today()
+        date_fr   = format_date_fr(today)
+        heure_str = datetime.now().strftime("%Hh%M")
+        send_notification(
+            f"🔴 <b>Alerte — {date_fr}</b>\n"
+            f"📚 SC.PHYS.-CHIM.APPLIQ\n"
+            f"🕐 {heure_str}\n"
+            f"📌 Prof. absent"
+        )
+        return {"ok": True, "message": "✅ Notification Telegram envoyée ! Vérifie ton téléphone."}, 200
+    except Exception as e:
+        return {"ok": False, "message": f"❌ Erreur : {str(e)}"}, 500
+
+@app.route("/test/pronote")
+def test_pronote():
+    try:
+        creds  = load_credentials()
+        client = pronotepy.Client.token_login(**creds)
+        if not client.logged_in:
+            return {"ok": False, "message": "❌ Connexion Pronote échouée — token invalide."}, 500
+        name = client.info.name
+        return {"ok": True, "message": f"✅ Connecté à Pronote en tant que : {name}"}, 200
+    except Exception as e:
+        return {"ok": False, "message": f"❌ Erreur Pronote : {str(e)}"}, 500
 
 
 if __name__ == "__main__":
