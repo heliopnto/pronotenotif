@@ -2,16 +2,14 @@
 📅 Pronote Watcher — Surveillance via API pronotepy
 Détecte : cours annulé, prof absent, cours déplacé, changement de salle
 Notifie via ntfy.sh (iPhone)
-Credentials persistés via l'API Render (survit aux redémarrages)
-
-Installation :
-    pip install pronotepy requests flask
+Credentials ET cours notifiés persistés via l'API Render
 
 Variables d'environnement à définir sur Render :
-    PRONOTE_CREDENTIALS   → le JSON credentials (copie le contenu de credentials.json)
+    PRONOTE_CREDENTIALS   → JSON credentials (contenu de credentials.json)
     NTFY_TOPIC            → ton topic ntfy.sh
-    RENDER_API_KEY        → ta clé API Render (dashboard → Account Settings → API Keys)
-    RENDER_SERVICE_ID     → l'ID de ton service Render (ex: srv-xxxxx)
+    RENDER_API_KEY        → Account Settings → API Keys sur Render
+    RENDER_SERVICE_ID     → ID du service (ex: srv-xxxxx)
+    ALREADY_NOTIFIED      → [] (laisser vide au départ, géré automatiquement)
 """
 
 import os
@@ -25,7 +23,7 @@ from datetime import date, datetime
 from flask import Flask
 
 # ─────────────────────────────────────────────
-# ⚙️  CONFIG — Tout vient des variables d'env Render
+# ⚙️  CONFIG
 # ─────────────────────────────────────────────
 
 NTFY_TOPIC        = os.environ.get("NTFY_TOPIC", "mon_topic_ntfy")
@@ -41,53 +39,64 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-already_notified: set = set()
+# ─────────────────────────────────────────────
+# API RENDER — PERSISTENCE
+# ─────────────────────────────────────────────
 
-# ─────────────────────────────────────────────
-# PERSISTENCE DES CREDENTIALS VIA API RENDER
-# ─────────────────────────────────────────────
+def update_render_env(key: str, value: str):
+    """Met à jour une variable d'env sur Render via l'API."""
+    if not RENDER_API_KEY or not RENDER_SERVICE_ID:
+        log.warning(f"Clés Render manquantes — {key} non sauvegardée.")
+        return
+    try:
+        r = requests.put(
+            f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars/{key}",
+            headers={"Authorization": f"Bearer {RENDER_API_KEY}", "Content-Type": "application/json"},
+            json={"value": value},
+            timeout=10
+        )
+        if r.status_code == 200:
+            log.info(f"💾 Render env mis à jour : {key}")
+        else:
+            log.warning(f"Render API {key} : {r.status_code} — {r.text}")
+    except requests.RequestException as e:
+        log.error(f"Erreur Render ({key}) : {e}")
+
 
 def load_credentials() -> dict:
-    """Charge les credentials depuis la variable d'env PRONOTE_CREDENTIALS."""
     raw = os.environ.get("PRONOTE_CREDENTIALS", "")
     if not raw:
         raise ValueError("Variable d'env PRONOTE_CREDENTIALS manquante !")
     return json.loads(raw)
 
 
-def save_credentials_to_render(creds: dict):
-    """
-    Met à jour la variable PRONOTE_CREDENTIALS sur Render via l'API.
-    Le token renouvelé persiste ainsi après redémarrage.
-    """
-    if not RENDER_API_KEY or not RENDER_SERVICE_ID:
-        log.warning("RENDER_API_KEY ou RENDER_SERVICE_ID manquant — credentials non sauvegardés sur Render.")
-        return
+def save_credentials(creds: dict):
+    update_render_env("PRONOTE_CREDENTIALS", json.dumps(creds))
 
+
+def load_notified() -> set:
+    """Charge la liste des cours déjà notifiés depuis Render."""
+    raw = os.environ.get("ALREADY_NOTIFIED", "[]")
     try:
-        response = requests.put(
-            f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars/PRONOTE_CREDENTIALS",
-            headers={
-                "Authorization": f"Bearer {RENDER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={"value": json.dumps(creds)},
-            timeout=10
-        )
-        if response.status_code == 200:
-            log.info("💾 Credentials mis à jour sur Render.")
-        else:
-            log.warning(f"Render API : {response.status_code} — {response.text}")
-    except requests.RequestException as e:
-        log.error(f"Erreur sauvegarde Render : {e}")
+        return set(json.loads(raw))
+    except Exception:
+        return set()
+
+
+def save_notified(notified: set):
+    """
+    Sauvegarde la liste sur Render.
+    On filtre uniquement les IDs du jour pour ne pas faire grossir la liste.
+    """
+    today_str = date.today().strftime("%Y%m%d")
+    filtered = {item for item in notified if today_str in item}
+    update_render_env("ALREADY_NOTIFIED", json.dumps(list(filtered)))
 
 
 # ─────────────────────────────────────────────
 # NOTIFICATIONS
 # ─────────────────────────────────────────────
 
-
-# Mapping priorités → valeurs ntfy (1=min à 5=urgent)
 PRIORITY_MAP = {
     "urgent":  "5",
     "high":    "4",
@@ -97,25 +106,19 @@ PRIORITY_MAP = {
 }
 
 def send_notification(title: str, message: str, priority: str = "high"):
-    """Envoie une notification push via ntfy.sh."""
     try:
-        safe_title = title.encode("ascii", "ignore").decode().strip()
+        safe_title    = title.encode("ascii", "ignore").decode().strip()
         ntfy_priority = PRIORITY_MAP.get(priority, "3")
-
-        response = requests.post(
+        r = requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
-            headers={
-                "Title":    safe_title,
-                "Priority": ntfy_priority,
-                "Tags":     "warning,school",
-            },
+            headers={"Title": safe_title, "Priority": ntfy_priority, "Tags": "warning,school"},
             timeout=10
         )
-        if response.status_code == 200:
-            log.info(f"📱 Notif envoyée (priorité {ntfy_priority}) : {title}")
+        if r.status_code == 200:
+            log.info(f"📱 Notif envoyée : {title}")
         else:
-            log.warning(f"ntfy.sh erreur {response.status_code} : {response.text}")
+            log.warning(f"ntfy.sh erreur {r.status_code} : {r.text}")
     except requests.RequestException as e:
         log.error(f"Erreur ntfy.sh : {e}")
 
@@ -125,15 +128,11 @@ def send_notification(title: str, message: str, priority: str = "high"):
 # ─────────────────────────────────────────────
 
 def analyse_lesson(lesson: pronotepy.Lesson):
-    """Retourne (emoji, label, priorité) si le cours a un changement, sinon None."""
-
     if lesson.canceled:
         status = lesson.status or "Cours annulé"
         if "absent" in status.lower():
             return ("🔴", f"Prof. absent — {status}", "urgent")
-        else:
-            return ("🔴", f"Cours annulé — {status}", "urgent")
-
+        return ("🔴", f"Cours annulé — {status}", "urgent")
     if lesson.status:
         s = lesson.status.lower()
         if "déplacé" in s or "deplace" in s:
@@ -141,13 +140,15 @@ def analyse_lesson(lesson: pronotepy.Lesson):
         if "salle" in s or "changement" in s:
             return ("🔵", f"Changement de salle — {lesson.status}", "default")
         return ("⚠️", lesson.status, "default")
-
     return None
 
 
 def check_cancellations(client: pronotepy.Client):
-    """Récupère les cours du jour et notifie les changements."""
-    today = date.today()
+    today     = date.today()
+    today_str = today.strftime("%Y%m%d")
+
+    # Charge la liste persistée (survit aux redémarrages Render)
+    already_notified = load_notified()
 
     try:
         lessons = client.lessons(today)
@@ -158,6 +159,8 @@ def check_cancellations(client: pronotepy.Client):
     if not lessons:
         log.info("Aucun cours aujourd'hui.")
         return
+
+    new_notifications = False
 
     for lesson in lessons:
         if lesson.start is None:
@@ -170,12 +173,15 @@ def check_cancellations(client: pronotepy.Client):
         emoji, label, priority = result
         subject_name = lesson.subject.name if lesson.subject else "Cours"
         start_str    = lesson.start.strftime("%H%M")
-        lesson_id    = f"{subject_name}_{start_str}_{label}"
+        # La date dans l'ID évite les doublons entre jours ET entre redémarrages
+        lesson_id    = f"{today_str}_{subject_name}_{start_str}_{label}"
 
         if lesson_id in already_notified:
+            log.info(f"Déjà notifié : {lesson_id}")
             continue
 
         already_notified.add(lesson_id)
+        new_notifications = True
 
         start_fmt = lesson.start.strftime("%H:%M")
         end_fmt   = lesson.end.strftime("%H:%M") if lesson.end else "?"
@@ -193,6 +199,10 @@ def check_cancellations(client: pronotepy.Client):
         )
         log.info(f"Cours signalé : {lesson_id}")
 
+    # Sauvegarde sur Render seulement si de nouvelles notifs ont été envoyées
+    if new_notifications:
+        save_notified(already_notified)
+
 
 # ─────────────────────────────────────────────
 # CONNEXION
@@ -202,71 +212,56 @@ def login() -> pronotepy.Client:
     log.info("Connexion à Pronote via token...")
     creds  = load_credentials()
     client = pronotepy.Client.token_login(**creds)
-
     if not client.logged_in:
         raise ConnectionError("Échec de connexion via token.")
-
     log.info(f"✅ Connecté : {client.info.name}")
-
-    # Renouvelle et sauvegarde le token sur Render
-    new_creds = client.export_credentials()
-    save_credentials_to_render(new_creds)
-
+    save_credentials(client.export_credentials())
     return client
 
 
 # ─────────────────────────────────────────────
-# BOUCLE DE SURVEILLANCE (thread séparé)
+# BOUCLE DE SURVEILLANCE
 # ─────────────────────────────────────────────
 
 def watcher_loop():
     client = None
     fails  = 0
-
     try:
         client = login()
     except Exception as e:
         log.critical(f"Connexion initiale impossible : {e}")
         return
 
-    send_notification(
-        "Pronote Watcher actif",
-        "Surveillance lancée. Alertes : annulation, cours déplacé, changement de salle.",
-        priority="low"
-    )
+    send_notification("Pronote Watcher actif", "Surveillance lancée.", priority="low")
 
     while True:
         try:
             log.info(f"🔍 Vérification — {datetime.now().strftime('%H:%M:%S')}")
             check_cancellations(client)
             fails = 0
-
         except Exception as e:
             fails += 1
             log.error(f"Erreur ({fails}/5) : {e}")
-
             if fails >= 5:
-                log.warning("Reconnexion...")
                 try:
                     client = login()
                     fails  = 0
                 except Exception as re:
                     log.critical(f"Reconnexion échouée : {re}")
-                    send_notification("Pronote Watcher", "Reconnexion impossible. Vérification arrêtée.", priority="urgent")
+                    send_notification("Pronote Watcher", "Reconnexion impossible.", priority="urgent")
                     break
-
         time.sleep(CHECK_INTERVAL)
 
 
 # ─────────────────────────────────────────────
-# SERVEUR HTTP (requis par Render Web Service)
+# SERVEUR HTTP (requis par Render)
 # ─────────────────────────────────────────────
 
 app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return {"status": "ok", "message": "Pronote Watcher tourne ✅"}, 200
+    return {"status": "ok", "message": "Pronote Watcher tourne"}, 200
 
 @app.route("/health")
 def health():
@@ -274,10 +269,6 @@ def health():
 
 
 if __name__ == "__main__":
-    # Lance la surveillance dans un thread séparé
-    t = threading.Thread(target=watcher_loop, daemon=True)
-    t.start()
-
-    # Lance le serveur HTTP sur le port attendu par Render
+    threading.Thread(target=watcher_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
