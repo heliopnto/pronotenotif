@@ -1,11 +1,12 @@
 """
 📅 Pronote Watcher — Surveillance de toute la semaine
 Détecte : cours annulé, prof absent, cours déplacé, changement de salle
-Notifie via ntfy.sh avec format : Jour Date / Cours / Status / Heure
+Notifie via Telegram (compatible CarPlay)
 
 Variables d'environnement Render :
     PRONOTE_CREDENTIALS   → JSON credentials
-    NTFY_TOPIC            → topic ntfy.sh
+    TELEGRAM_TOKEN        → token du bot BotFather
+    TELEGRAM_CHAT_ID      → ton chat_id Telegram
     RENDER_API_KEY        → API Key Render
     RENDER_SERVICE_ID     → ID service Render (srv-xxxxx)
     ALREADY_NOTIFIED      → [] (géré automatiquement)
@@ -25,7 +26,8 @@ from flask import Flask
 # ⚙️  CONFIG
 # ─────────────────────────────────────────────
 
-NTFY_TOPIC        = os.environ.get("NTFY_TOPIC", "mon_topic_ntfy")
+TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "")
 RENDER_API_KEY    = os.environ.get("RENDER_API_KEY", "")
 RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "")
 CHECK_INTERVAL    = 60
@@ -97,9 +99,7 @@ def load_notified() -> set:
 
 
 def save_notified(notified: set):
-    # On garde uniquement les IDs de la semaine en cours
-    monday = get_week_days()[0].strftime("%Y%m%d")
-    friday = get_week_days()[-1].strftime("%Y%m%d")
+    # On garde uniquement les IDs de la semaine courante
     filtered = {
         item for item in notified
         if any(item.startswith(d.strftime("%Y%m%d")) for d in get_week_days())
@@ -112,47 +112,42 @@ def save_notified(notified: set):
 # ─────────────────────────────────────────────
 
 def get_week_days() -> list:
-    """Retourne la liste des jours lundi→vendredi de la semaine courante."""
     today  = date.today()
     monday = today - timedelta(days=today.weekday())
     return [monday + timedelta(days=i) for i in range(5)]
 
 
 def format_date_fr(d: date) -> str:
-    """Ex: Lundi 03 Mars"""
     jour = JOURS_FR.get(d.strftime("%A"), d.strftime("%A"))
     mois = MOIS_FR.get(d.month, str(d.month))
     return f"{jour} {d.day:02d} {mois}"
 
 
 # ─────────────────────────────────────────────
-# NOTIFICATIONS
+# NOTIFICATIONS TELEGRAM
 # ─────────────────────────────────────────────
 
-PRIORITY_MAP = {
-    "urgent":  "5",
-    "high":    "4",
-    "default": "3",
-    "low":     "2",
-    "min":     "1",
-}
-
-def send_notification(title: str, message: str, priority: str = "high"):
+def send_notification(message: str):
+    """Envoie un message Telegram (HTML, emojis, CarPlay natif)."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        log.warning("TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID manquant.")
+        return
     try:
-        safe_title    = title.encode("ascii", "ignore").decode().strip()
-        ntfy_priority = PRIORITY_MAP.get(priority, "3")
         r = requests.post(
-            f"https://ntfy.sh/{NTFY_TOPIC}",
-            data=message.encode("utf-8"),
-            headers={"Title": safe_title, "Priority": ntfy_priority, "Tags": "warning,school"},
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "HTML",
+            },
             timeout=10
         )
         if r.status_code == 200:
-            log.info(f"📱 Notif envoyée : {title}")
+            log.info(f"📱 Telegram envoyé : {message[:60]}...")
         else:
-            log.warning(f"ntfy.sh erreur {r.status_code} : {r.text}")
+            log.warning(f"Telegram erreur {r.status_code} : {r.text}")
     except requests.RequestException as e:
-        log.error(f"Erreur ntfy.sh : {e}")
+        log.error(f"Erreur Telegram : {e}")
 
 
 # ─────────────────────────────────────────────
@@ -160,29 +155,28 @@ def send_notification(title: str, message: str, priority: str = "high"):
 # ─────────────────────────────────────────────
 
 def analyse_lesson(lesson: pronotepy.Lesson):
-    """Retourne (emoji, status_label, priorité) ou None si cours normal."""
+    """Retourne (emoji, status_label) ou None si cours normal."""
     if lesson.canceled:
         status = lesson.status or "Cours annulé"
         if "absent" in status.lower():
-            return ("🔴", "Prof. absent", "urgent")
-        return ("🔴", "Cours annulé", "urgent")
+            return ("🔴", "Prof. absent")
+        return ("🔴", "Cours annulé")
     if lesson.status:
         s = lesson.status.lower()
         if "déplacé" in s or "deplace" in s:
-            return ("🟠", f"Cours déplacé", "high")
+            return ("🟠", "Cours déplacé")
         if "remplacement" in s:
-            return ("🟡", f"Remplacement", "high")
+            return ("🟡", "Remplacement")
         if "salle" in s or "changement" in s:
-            return ("🔵", f"Changement de salle", "default")
-        # Autre statut Pronote inconnu
-        return ("⚠️", lesson.status, "default")
+            return ("🔵", "Changement de salle")
+        return ("⚠️", lesson.status)
     return None
 
 
 def check_week(client: pronotepy.Client):
-    """Vérifie tous les cours de la semaine et notifie les changements."""
-    week_days        = get_week_days()
-    already_notified = load_notified()
+    """Vérifie tous les cours lundi→vendredi et notifie les changements."""
+    week_days         = get_week_days()
+    already_notified  = load_notified()
     new_notifications = False
 
     for day in week_days:
@@ -203,7 +197,7 @@ def check_week(client: pronotepy.Client):
             if result is None:
                 continue
 
-            emoji, status_label, priority = result
+            emoji, status_label = result
             subject_name = lesson.subject.name if lesson.subject else "Cours inconnu"
             day_str      = day.strftime("%Y%m%d")
             start_str    = lesson.start.strftime("%H%M")
@@ -216,18 +210,17 @@ def check_week(client: pronotepy.Client):
             already_notified.add(lesson_id)
             new_notifications = True
 
-            # Format de la notif
             date_fr   = format_date_fr(day)
             heure_str = lesson.start.strftime("%Hh%M")
 
-            title = f"{emoji} Alerte {date_fr}"
             message = (
-                f"{emoji} {status_label}\n"
+                f"{emoji} <b>Alerte — {date_fr}</b>\n"
                 f"📚 {subject_name}\n"
-                f"🕐 {heure_str}"
+                f"🕐 {heure_str}\n"
+                f"📌 {status_label}"
             )
 
-            send_notification(title, message, priority)
+            send_notification(message)
             log.info(f"Notifié : {lesson_id}")
 
     if new_notifications:
@@ -260,7 +253,7 @@ def watcher_loop():
         log.critical(f"Connexion initiale impossible : {e}")
         return
 
-    send_notification("Pronote Watcher actif", "Surveillance de la semaine lancée.", priority="low")
+    send_notification("✅ <b>Pronote Watcher actif</b>\nSurveillance de la semaine lancée.")
 
     fails = 0
     while True:
@@ -277,7 +270,7 @@ def watcher_loop():
                     fails  = 0
                 except Exception as re:
                     log.critical(f"Reconnexion échouée : {re}")
-                    send_notification("Pronote Watcher", "Reconnexion impossible.", priority="urgent")
+                    send_notification("⚠️ <b>Pronote Watcher</b>\nReconnexion impossible. Vérification arrêtée.")
                     break
         time.sleep(CHECK_INTERVAL)
 
