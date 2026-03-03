@@ -2,88 +2,94 @@
 📅 Pronote Watcher — Surveillance via API pronotepy
 Détecte : cours annulé, prof absent, cours déplacé, changement de salle
 Notifie via ntfy.sh (iPhone)
+Credentials persistés via l'API Render (survit aux redémarrages)
 
 Installation :
-    pip install pronotepy requests
+    pip install pronotepy requests flask
+
+Variables d'environnement à définir sur Render :
+    PRONOTE_CREDENTIALS   → le JSON credentials (copie le contenu de credentials.json)
+    NTFY_TOPIC            → ton topic ntfy.sh
+    RENDER_API_KEY        → ta clé API Render (dashboard → Account Settings → API Keys)
+    RENDER_SERVICE_ID     → l'ID de ton service Render (ex: srv-xxxxx)
 """
 
-import time
-import json
 import os
+import json
+import time
 import logging
+import threading
 import requests
 import pronotepy
-from datetime import date, datetime, timedelta
-from pronotepy.ent import ent_hdf
+from datetime import date, datetime
+from flask import Flask
 
 # ─────────────────────────────────────────────
-# ⚙️  CONFIG — À MODIFIER AVANT DE LANCER
+# ⚙️  CONFIG — Tout vient des variables d'env Render
 # ─────────────────────────────────────────────
 
-CREDENTIALS = {
-  "pronote_url": "https://0620042j.index-education.net/pronote/mobile.eleve.html?fd=1&bydlg=A6ABB224-12DD-4E31-AD3E-8A39A1C2C335&login=true",
-  "username": "hpintooliveira",
-  "password": "3B796DDB49EFCEFA8642869178D1C2C48F39FCEE7F40F1AC38BDCBB273D7C38717DC90693885360CBB22E7EFB9715508",
-  "client_identifier": "DE058E742F83D0E95F14E6C715CF29820B5899A0487DE3F2C1E9607A2D823700F0AF27D93D0B6AE0503CE82D6BB9F945BD03C0FB00000000",
-  "uuid": "fb8414898db30776"
-}
-
-# Ton topic ntfy.sh (même nom que dans l'app iPhone)
-NTFY_TOPIC = "alerte_pronote"
-
-# Vérification toutes les X secondes
-CHECK_INTERVAL = 60
-
-CREDS_FILE = "credentials.json"
+NTFY_TOPIC        = os.environ.get("NTFY_TOPIC", "mon_topic_ntfy")
+RENDER_API_KEY    = os.environ.get("RENDER_API_KEY", "")
+RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "")
+CHECK_INTERVAL    = 60
 
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("pronote_watcher.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
+    format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger(__name__)
 
-# Mémorise les cours déjà notifiés pour éviter les doublons
 already_notified: set = set()
 
 # ─────────────────────────────────────────────
-# LOAD CRED
+# PERSISTENCE DES CREDENTIALS VIA API RENDER
 # ─────────────────────────────────────────────
 
-def load_credentials():
-    """Charge les credentials depuis le fichier si présent."""
-    if os.path.exists(CREDS_FILE):
-        with open(CREDS_FILE, "r", encoding="utf-8") as f:
-            log.info("🔄 Chargement des credentials sauvegardés.")
-            return json.load(f)
-    else:
-        log.info("📂 Aucun credentials sauvegardé, utilisation des credentials initiaux.")
-        return CREDENTIALS.copy()
+def load_credentials() -> dict:
+    """Charge les credentials depuis la variable d'env PRONOTE_CREDENTIALS."""
+    raw = os.environ.get("PRONOTE_CREDENTIALS", "")
+    if not raw:
+        raise ValueError("Variable d'env PRONOTE_CREDENTIALS manquante !")
+    return json.loads(raw)
 
 
-def save_credentials(creds: dict):
-    """Sauvegarde les credentials dans un fichier JSON."""
-    with open(CREDS_FILE, "w", encoding="utf-8") as f:
-        json.dump(creds, f, indent=2)
-    log.info("💾 Credentials mis à jour et sauvegardés.")
-    log.info(f"💾 Sauvegarde credentials dans : {os.path.abspath(CREDS_FILE)}")
+def save_credentials_to_render(creds: dict):
+    """
+    Met à jour la variable PRONOTE_CREDENTIALS sur Render via l'API.
+    Le token renouvelé persiste ainsi après redémarrage.
+    """
+    if not RENDER_API_KEY or not RENDER_SERVICE_ID:
+        log.warning("RENDER_API_KEY ou RENDER_SERVICE_ID manquant — credentials non sauvegardés sur Render.")
+        return
+
+    try:
+        response = requests.put(
+            f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars/PRONOTE_CREDENTIALS",
+            headers={
+                "Authorization": f"Bearer {RENDER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"value": json.dumps(creds)},
+            timeout=10
+        )
+        if response.status_code == 200:
+            log.info("💾 Credentials mis à jour sur Render.")
+        else:
+            log.warning(f"Render API : {response.status_code} — {response.text}")
+    except requests.RequestException as e:
+        log.error(f"Erreur sauvegarde Render : {e}")
 
 
 # ─────────────────────────────────────────────
 # NOTIFICATIONS
-# ────────────────────────────────────────────
+# ─────────────────────────────────────────────
 
 def send_notification(title: str, message: str, priority: str = "high"):
     """Envoie une notification push via ntfy.sh."""
     try:
-        # On enlève les emojis du header (ASCII only)
         safe_title = title.encode("ascii", "ignore").decode()
-
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
@@ -103,40 +109,25 @@ def send_notification(title: str, message: str, priority: str = "high"):
 # ANALYSE DES COURS
 # ─────────────────────────────────────────────
 
-def analyse_lesson(lesson: pronotepy.Lesson) -> tuple[str, str, str] | None:
-    """
-    Analyse un cours et retourne (emoji, label, priorité) si alertable.
-    Retourne None si le cours est normal.
+def analyse_lesson(lesson: pronotepy.Lesson):
+    """Retourne (emoji, label, priorité) si le cours a un changement, sinon None."""
 
-    Propriétés pronotepy utilisées :
-      lesson.canceled      → bool  — cours annulé / prof absent
-      lesson.detention     → bool  — heure de colle
-      lesson.exempted      → bool  — dispensé
-      lesson.test          → bool  — contrôle
-      lesson.status        → str   — texte libre ex: "Prof. absent", "Cours déplacé"
-      lesson.classrooms    → list  — salles (changement détecté par comparaison)
-    """
-
-    # 1. Cours annulé ou prof absent
     if lesson.canceled:
         status = lesson.status or "Cours annulé"
-        # Distinguer "Prof. absent" de "Cours annulé" via le status
         if "absent" in status.lower():
             return ("🔴", f"Prof. absent — {status}", "urgent")
         else:
             return ("🔴", f"Cours annulé — {status}", "urgent")
 
-    # 2. Cours avec statut particulier (déplacé, changement de salle, etc.)
     if lesson.status:
         s = lesson.status.lower()
         if "déplacé" in s or "deplace" in s:
             return ("🟠", f"Cours déplacé — {lesson.status}", "high")
         if "salle" in s or "changement" in s:
             return ("🔵", f"Changement de salle — {lesson.status}", "default")
-        # Autre statut inconnu → on notifie quand même
         return ("⚠️", lesson.status, "default")
 
-    return None  # Cours normal, rien à signaler
+    return None
 
 
 def check_cancellations(client: pronotepy.Client):
@@ -153,25 +144,15 @@ def check_cancellations(client: pronotepy.Client):
         log.info("Aucun cours aujourd'hui.")
         return
 
-    now = datetime.now()
-
     for lesson in lessons:
         if lesson.start is None:
             continue
-
-        # On ne s'intéresse qu'aux cours à venir (pas encore terminés)
-        if lesson.start < now and lesson.start.date() == today:
-            # Cours déjà passé — on vérifie quand même pour ne pas rater
-            # les annulations de dernière minute
-            pass
 
         result = analyse_lesson(lesson)
         if result is None:
             continue
 
         emoji, label, priority = result
-
-        # Identifiant unique pour éviter les doublons
         subject_name = lesson.subject.name if lesson.subject else "Cours"
         start_str    = lesson.start.strftime("%H%M")
         lesson_id    = f"{subject_name}_{start_str}_{label}"
@@ -181,20 +162,20 @@ def check_cancellations(client: pronotepy.Client):
 
         already_notified.add(lesson_id)
 
-        # Infos du cours
         start_fmt = lesson.start.strftime("%H:%M")
         end_fmt   = lesson.end.strftime("%H:%M") if lesson.end else "?"
         teacher   = lesson.teacher_name if hasattr(lesson, "teacher_name") and lesson.teacher_name else "Prof inconnu"
         classroom = ", ".join(lesson.classrooms) if lesson.classrooms else "N/A"
 
-        title = label
-        message = (
-            f"📚 {subject_name} ({start_fmt}–{end_fmt})\n"
-            f"👤 {teacher}\n"
-            f"🏫 Salle : {classroom}"
+        send_notification(
+            title=label,
+            message=(
+                f"📚 {subject_name} ({start_fmt}–{end_fmt})\n"
+                f"👤 {teacher}\n"
+                f"🏫 Salle : {classroom}"
+            ),
+            priority=priority
         )
-
-        send_notification(title, message, priority)
         log.info(f"Cours signalé : {lesson_id}")
 
 
@@ -204,31 +185,26 @@ def check_cancellations(client: pronotepy.Client):
 
 def login() -> pronotepy.Client:
     log.info("Connexion à Pronote via token...")
-
-    try:
-        creds = load_credentials()
-        client = pronotepy.Client.token_login(**creds)
-    except Exception:
-        log.warning("Credentials sauvegardés invalides, tentative avec credentials initiaux.")
-        client = pronotepy.Client.token_login(**CREDENTIALS)
+    creds  = load_credentials()
+    client = pronotepy.Client.token_login(**creds)
 
     if not client.logged_in:
         raise ConnectionError("Échec de connexion via token.")
 
-    log.info(f"✅ Connecté en tant que : {client.info.name}")
+    log.info(f"✅ Connecté : {client.info.name}")
 
+    # Renouvelle et sauvegarde le token sur Render
     new_creds = client.export_credentials()
-    save_credentials(new_creds)
+    save_credentials_to_render(new_creds)
 
     return client
 
+
 # ─────────────────────────────────────────────
-# BOUCLE PRINCIPALE
+# BOUCLE DE SURVEILLANCE (thread séparé)
 # ─────────────────────────────────────────────
 
-def main():
-    log.info("🎓 Pronote Watcher démarré")
-
+def watcher_loop():
     client = None
     fails  = 0
 
@@ -240,7 +216,7 @@ def main():
 
     send_notification(
         "Pronote Watcher actif",
-        "Surveillance lancée. Tu seras alerté en cas d'annulation, cours déplacé ou changement de salle.",
+        "Surveillance lancée. Alertes : annulation, cours déplacé, changement de salle.",
         priority="low"
     )
 
@@ -255,17 +231,38 @@ def main():
             log.error(f"Erreur ({fails}/5) : {e}")
 
             if fails >= 5:
-                log.warning("Trop d'erreurs, tentative de reconnexion...")
+                log.warning("Reconnexion...")
                 try:
                     client = login()
-                    fails = 0
+                    fails  = 0
                 except Exception as re:
                     log.critical(f"Reconnexion échouée : {re}")
-                    send_notification("⚠️ Pronote Watcher", "Reconnexion impossible. Vérification arrêtée.", priority="urgent")
+                    send_notification("Pronote Watcher", "Reconnexion impossible. Vérification arrêtée.", priority="urgent")
                     break
 
         time.sleep(CHECK_INTERVAL)
 
 
+# ─────────────────────────────────────────────
+# SERVEUR HTTP (requis par Render Web Service)
+# ─────────────────────────────────────────────
+
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return {"status": "ok", "message": "Pronote Watcher tourne ✅"}, 200
+
+@app.route("/health")
+def health():
+    return {"status": "healthy"}, 200
+
+
 if __name__ == "__main__":
-    main()
+    # Lance la surveillance dans un thread séparé
+    t = threading.Thread(target=watcher_loop, daemon=True)
+    t.start()
+
+    # Lance le serveur HTTP sur le port attendu par Render
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
