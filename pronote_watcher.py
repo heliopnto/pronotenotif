@@ -1,15 +1,14 @@
 """
-📅 Pronote Watcher — Surveillance via API pronotepy
+📅 Pronote Watcher — Surveillance de toute la semaine
 Détecte : cours annulé, prof absent, cours déplacé, changement de salle
-Notifie via ntfy.sh (iPhone)
-Credentials ET cours notifiés persistés via l'API Render
+Notifie via ntfy.sh avec format : Jour Date / Cours / Status / Heure
 
-Variables d'environnement à définir sur Render :
-    PRONOTE_CREDENTIALS   → JSON credentials (contenu de credentials.json)
-    NTFY_TOPIC            → ton topic ntfy.sh
-    RENDER_API_KEY        → Account Settings → API Keys sur Render
-    RENDER_SERVICE_ID     → ID du service (ex: srv-xxxxx)
-    ALREADY_NOTIFIED      → [] (laisser vide au départ, géré automatiquement)
+Variables d'environnement Render :
+    PRONOTE_CREDENTIALS   → JSON credentials
+    NTFY_TOPIC            → topic ntfy.sh
+    RENDER_API_KEY        → API Key Render
+    RENDER_SERVICE_ID     → ID service Render (srv-xxxxx)
+    ALREADY_NOTIFIED      → [] (géré automatiquement)
 """
 
 import os
@@ -19,7 +18,7 @@ import logging
 import threading
 import requests
 import pronotepy
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from flask import Flask
 
 # ─────────────────────────────────────────────
@@ -30,6 +29,22 @@ NTFY_TOPIC        = os.environ.get("NTFY_TOPIC", "mon_topic_ntfy")
 RENDER_API_KEY    = os.environ.get("RENDER_API_KEY", "")
 RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "")
 CHECK_INTERVAL    = 60
+
+JOURS_FR = {
+    "Monday":    "Lundi",
+    "Tuesday":   "Mardi",
+    "Wednesday": "Mercredi",
+    "Thursday":  "Jeudi",
+    "Friday":    "Vendredi",
+    "Saturday":  "Samedi",
+    "Sunday":    "Dimanche",
+}
+
+MOIS_FR = {
+    1: "Janvier", 2: "Février",   3: "Mars",     4: "Avril",
+    5: "Mai",     6: "Juin",      7: "Juillet",  8: "Août",
+    9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre",
+}
 
 # ─────────────────────────────────────────────
 
@@ -44,7 +59,6 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 
 def update_render_env(key: str, value: str):
-    """Met à jour une variable d'env sur Render via l'API."""
     if not RENDER_API_KEY or not RENDER_SERVICE_ID:
         log.warning(f"Clés Render manquantes — {key} non sauvegardée.")
         return
@@ -75,7 +89,6 @@ def save_credentials(creds: dict):
 
 
 def load_notified() -> set:
-    """Charge la liste des cours déjà notifiés depuis Render."""
     raw = os.environ.get("ALREADY_NOTIFIED", "[]")
     try:
         return set(json.loads(raw))
@@ -84,13 +97,32 @@ def load_notified() -> set:
 
 
 def save_notified(notified: set):
-    """
-    Sauvegarde la liste sur Render.
-    On filtre uniquement les IDs du jour pour ne pas faire grossir la liste.
-    """
-    today_str = date.today().strftime("%Y%m%d")
-    filtered = {item for item in notified if today_str in item}
+    # On garde uniquement les IDs de la semaine en cours
+    monday = get_week_days()[0].strftime("%Y%m%d")
+    friday = get_week_days()[-1].strftime("%Y%m%d")
+    filtered = {
+        item for item in notified
+        if any(item.startswith(d.strftime("%Y%m%d")) for d in get_week_days())
+    }
     update_render_env("ALREADY_NOTIFIED", json.dumps(list(filtered)))
+
+
+# ─────────────────────────────────────────────
+# HELPERS DATE
+# ─────────────────────────────────────────────
+
+def get_week_days() -> list:
+    """Retourne la liste des jours lundi→vendredi de la semaine courante."""
+    today  = date.today()
+    monday = today - timedelta(days=today.weekday())
+    return [monday + timedelta(days=i) for i in range(5)]
+
+
+def format_date_fr(d: date) -> str:
+    """Ex: Lundi 03 Mars"""
+    jour = JOURS_FR.get(d.strftime("%A"), d.strftime("%A"))
+    mois = MOIS_FR.get(d.month, str(d.month))
+    return f"{jour} {d.day:02d} {mois}"
 
 
 # ─────────────────────────────────────────────
@@ -128,78 +160,76 @@ def send_notification(title: str, message: str, priority: str = "high"):
 # ─────────────────────────────────────────────
 
 def analyse_lesson(lesson: pronotepy.Lesson):
+    """Retourne (emoji, status_label, priorité) ou None si cours normal."""
     if lesson.canceled:
         status = lesson.status or "Cours annulé"
         if "absent" in status.lower():
-            return ("🔴", f"Prof. absent — {status}", "urgent")
-        return ("🔴", f"Cours annulé — {status}", "urgent")
+            return ("🔴", "Prof. absent", "urgent")
+        return ("🔴", "Cours annulé", "urgent")
     if lesson.status:
         s = lesson.status.lower()
         if "déplacé" in s or "deplace" in s:
-            return ("🟠", f"Cours déplacé — {lesson.status}", "high")
+            return ("🟠", f"Cours déplacé", "high")
+        if "remplacement" in s:
+            return ("🟡", f"Remplacement", "high")
         if "salle" in s or "changement" in s:
-            return ("🔵", f"Changement de salle — {lesson.status}", "default")
+            return ("🔵", f"Changement de salle", "default")
+        # Autre statut Pronote inconnu
         return ("⚠️", lesson.status, "default")
     return None
 
 
-def check_cancellations(client: pronotepy.Client):
-    today     = date.today()
-    today_str = today.strftime("%Y%m%d")
-
-    # Charge la liste persistée (survit aux redémarrages Render)
+def check_week(client: pronotepy.Client):
+    """Vérifie tous les cours de la semaine et notifie les changements."""
+    week_days        = get_week_days()
     already_notified = load_notified()
-
-    try:
-        lessons = client.lessons(today)
-    except Exception as e:
-        log.error(f"Impossible de récupérer les cours : {e}")
-        return
-
-    if not lessons:
-        log.info("Aucun cours aujourd'hui.")
-        return
-
     new_notifications = False
 
-    for lesson in lessons:
-        if lesson.start is None:
+    for day in week_days:
+        try:
+            lessons = client.lessons(day)
+        except Exception as e:
+            log.error(f"Erreur récupération cours {day} : {e}")
             continue
 
-        result = analyse_lesson(lesson)
-        if result is None:
+        if not lessons:
             continue
 
-        emoji, label, priority = result
-        subject_name = lesson.subject.name if lesson.subject else "Cours"
-        start_str    = lesson.start.strftime("%H%M")
-        # La date dans l'ID évite les doublons entre jours ET entre redémarrages
-        lesson_id    = f"{today_str}_{subject_name}_{start_str}_{label}"
+        for lesson in lessons:
+            if lesson.start is None:
+                continue
 
-        if lesson_id in already_notified:
-            log.info(f"Déjà notifié : {lesson_id}")
-            continue
+            result = analyse_lesson(lesson)
+            if result is None:
+                continue
 
-        already_notified.add(lesson_id)
-        new_notifications = True
+            emoji, status_label, priority = result
+            subject_name = lesson.subject.name if lesson.subject else "Cours inconnu"
+            day_str      = day.strftime("%Y%m%d")
+            start_str    = lesson.start.strftime("%H%M")
+            lesson_id    = f"{day_str}_{subject_name}_{start_str}_{status_label}"
 
-        start_fmt = lesson.start.strftime("%H:%M")
-        end_fmt   = lesson.end.strftime("%H:%M") if lesson.end else "?"
-        teacher   = lesson.teacher_name if hasattr(lesson, "teacher_name") and lesson.teacher_name else "Prof inconnu"
-        classroom = ", ".join(lesson.classrooms) if lesson.classrooms else "N/A"
+            if lesson_id in already_notified:
+                log.info(f"Déjà notifié : {lesson_id}")
+                continue
 
-        send_notification(
-            title=label,
-            message=(
-                f"📚 {subject_name} ({start_fmt}–{end_fmt})\n"
-                f"👤 {teacher}\n"
-                f"🏫 Salle : {classroom}"
-            ),
-            priority=priority
-        )
-        log.info(f"Cours signalé : {lesson_id}")
+            already_notified.add(lesson_id)
+            new_notifications = True
 
-    # Sauvegarde sur Render seulement si de nouvelles notifs ont été envoyées
+            # Format de la notif
+            date_fr   = format_date_fr(day)
+            heure_str = lesson.start.strftime("%Hh%M")
+
+            title = f"{emoji} Alerte {date_fr}"
+            message = (
+                f"{emoji} {status_label}\n"
+                f"📚 {subject_name}\n"
+                f"🕐 {heure_str}"
+            )
+
+            send_notification(title, message, priority)
+            log.info(f"Notifié : {lesson_id}")
+
     if new_notifications:
         save_notified(already_notified)
 
@@ -224,20 +254,19 @@ def login() -> pronotepy.Client:
 # ─────────────────────────────────────────────
 
 def watcher_loop():
-    client = None
-    fails  = 0
     try:
         client = login()
     except Exception as e:
         log.critical(f"Connexion initiale impossible : {e}")
         return
 
-    send_notification("Pronote Watcher actif", "Surveillance lancée.", priority="low")
+    send_notification("Pronote Watcher actif", "Surveillance de la semaine lancée.", priority="low")
 
+    fails = 0
     while True:
         try:
-            log.info(f"🔍 Vérification — {datetime.now().strftime('%H:%M:%S')}")
-            check_cancellations(client)
+            log.info(f"🔍 Vérification semaine — {datetime.now().strftime('%H:%M:%S')}")
+            check_week(client)
             fails = 0
         except Exception as e:
             fails += 1
