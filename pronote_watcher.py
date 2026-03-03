@@ -86,21 +86,36 @@ def save_credentials_to_render(creds: dict):
 # NOTIFICATIONS
 # ─────────────────────────────────────────────
 
+
+# Mapping priorités → valeurs ntfy (1=min à 5=urgent)
+PRIORITY_MAP = {
+    "urgent":  "5",
+    "high":    "4",
+    "default": "3",
+    "low":     "2",
+    "min":     "1",
+}
+
 def send_notification(title: str, message: str, priority: str = "high"):
     """Envoie une notification push via ntfy.sh."""
     try:
-        safe_title = title.encode("ascii", "ignore").decode()
-        requests.post(
+        safe_title = title.encode("ascii", "ignore").decode().strip()
+        ntfy_priority = PRIORITY_MAP.get(priority, "3")
+
+        response = requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={
-                "Title": safe_title,
-                "Priority": priority,
-                "Tags": "school,warning",
+                "Title":    safe_title,
+                "Priority": ntfy_priority,
+                "Tags":     "warning,school",
             },
             timeout=10
         )
-        log.info(f"📱 Notif envoyée : {title}")
+        if response.status_code == 200:
+            log.info(f"📱 Notif envoyée (priorité {ntfy_priority}) : {title}")
+        else:
+            log.warning(f"ntfy.sh erreur {response.status_code} : {response.text}")
     except requests.RequestException as e:
         log.error(f"Erreur ntfy.sh : {e}")
 
