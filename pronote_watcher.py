@@ -57,6 +57,45 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
+# CACHE LOCAL already_notified
+# Fix : évite de relire os.environ à chaque vérification
+# ─────────────────────────────────────────────
+
+_notified_cache: set   = set()
+_notified_loaded: bool = False
+_notified_lock         = threading.Lock()
+
+
+def load_notified() -> set:
+    global _notified_cache, _notified_loaded
+    with _notified_lock:
+        if not _notified_loaded:
+            raw = os.environ.get("ALREADY_NOTIFIED", "[]")
+            try:
+                _notified_cache = set(json.loads(raw))
+                log.info(f"📂 {len(_notified_cache)} cours déjà notifiés chargés.")
+            except Exception:
+                _notified_cache = set()
+            _notified_loaded = True
+        return set(_notified_cache)  # copie pour éviter les mutations externes
+
+
+def save_notified(notified: set):
+    global _notified_cache
+    with _notified_lock:
+        _notified_cache = notified  # met à jour le cache local
+    try:
+        week_days = get_week_days()
+        filtered  = {
+            item for item in notified
+            if any(item.startswith(d.strftime("%Y%m%d")) for d in week_days)
+        }
+        update_render_env("ALREADY_NOTIFIED", json.dumps(list(filtered)))
+    except Exception as e:
+        log.error(f"Erreur save_notified : {e}")
+
+
+# ─────────────────────────────────────────────
 # API RENDER — PERSISTENCE
 # ─────────────────────────────────────────────
 
@@ -90,23 +129,6 @@ def save_credentials(creds: dict):
     update_render_env("PRONOTE_CREDENTIALS", json.dumps(creds))
 
 
-def load_notified() -> set:
-    raw = os.environ.get("ALREADY_NOTIFIED", "[]")
-    try:
-        return set(json.loads(raw))
-    except Exception:
-        return set()
-
-
-def save_notified(notified: set):
-    # On garde uniquement les IDs de la semaine courante
-    filtered = {
-        item for item in notified
-        if any(item.startswith(d.strftime("%Y%m%d")) for d in get_week_days())
-    }
-    update_render_env("ALREADY_NOTIFIED", json.dumps(list(filtered)))
-
-
 # ─────────────────────────────────────────────
 # HELPERS DATE
 # ─────────────────────────────────────────────
@@ -136,8 +158,8 @@ def send_notification(message: str):
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
+                "chat_id":    TELEGRAM_CHAT_ID,
+                "text":       message,
                 "parse_mode": "HTML",
             },
             timeout=10
@@ -244,13 +266,28 @@ def login() -> pronotepy.Client:
 
 # ─────────────────────────────────────────────
 # BOUCLE DE SURVEILLANCE
+# Fix : wrapper qui notifie sur Telegram si le thread plante
 # ─────────────────────────────────────────────
 
 def watcher_loop():
+    """Wrapper qui capture toute exception et notifie sur Telegram."""
+    try:
+        _watcher_loop_inner()
+    except Exception as e:
+        log.critical(f"💀 Thread de surveillance mort : {e}", exc_info=True)
+        send_notification(
+            "💀 <b>Pronote Watcher — Erreur critique</b>\n"
+            f"Le thread a planté :\n<code>{e}</code>\n"
+            "Redémarre le service sur Render."
+        )
+
+
+def _watcher_loop_inner():
     try:
         client = login()
     except Exception as e:
         log.critical(f"Connexion initiale impossible : {e}")
+        send_notification(f"❌ <b>Pronote Watcher</b>\nConnexion initiale impossible :\n<code>{e}</code>")
         return
 
     send_notification("✅ <b>Pronote Watcher actif</b>\nSurveillance de la semaine lancée.")
@@ -273,11 +310,32 @@ def watcher_loop():
                     send_notification("⚠️ <b>Pronote Watcher</b>\nReconnexion impossible. Vérification arrêtée.")
                     break
         time.sleep(CHECK_INTERVAL)
-        
+
+
+# ─────────────────────────────────────────────
+# DÉMARRAGE DU THREAD
+# Fix : guard contre le double démarrage (gunicorn multi-workers)
+# ─────────────────────────────────────────────
+
+_watcher_started = False
+_watcher_lock    = threading.Lock()
+
+
 def start_watcher():
+    global _watcher_started
+    with _watcher_lock:
+        if _watcher_started:
+            log.warning("Thread déjà démarré — ignoré.")
+            return
+        _watcher_started = True
     t = threading.Thread(target=watcher_loop, daemon=True)
     t.start()
     log.info("🚀 Thread de surveillance démarré.")
+
+
+# Démarre dès le chargement du module (compatible gunicorn)
+start_watcher()
+
 
 # ─────────────────────────────────────────────
 # SERVEUR HTTP (requis par Render)
@@ -285,7 +343,6 @@ def start_watcher():
 
 app = Flask(__name__)
 
-start_watcher()
 
 @app.route("/")
 def index():
@@ -298,7 +355,7 @@ def index():
             body { font-family: sans-serif; max-width: 500px; margin: 60px auto; padding: 20px; background: #f5f5f5; }
             h1 { color: #333; }
             .status { background: #d4edda; border-radius: 8px; padding: 12px 16px; margin-bottom: 24px; color: #155724; font-weight: bold; }
-            .btn { display: inline-block; padding: 12px 24px; background: #0088cc; color: white; border-radius: 8px; text-decoration: none; font-size: 16px; cursor: pointer; border: none; width: 100%; box-sizing: border-box; text-align: center; font-size: 15px; margin-bottom: 10px; }
+            .btn { display: inline-block; padding: 12px 24px; background: #0088cc; color: white; border-radius: 8px; text-decoration: none; font-size: 16px; cursor: pointer; border: none; width: 100%; box-sizing: border-box; text-align: center; margin-bottom: 10px; }
             .btn:hover { background: #006fa8; }
             .btn.green { background: #28a745; }
             .btn.green:hover { background: #1e7e34; }
@@ -310,37 +367,31 @@ def index():
     <body>
         <h1>📅 Pronote Watcher</h1>
         <div class="status">✅ Service en ligne</div>
-
-        <a href="/test/telegram" class="btn">
-            📱 Tester la notification Telegram
-        </a>
-        <a href="/test/pronote" class="btn green">
-            🎓 Tester la connexion Pronote
-        </a>
-
+        <a href="/test/telegram" class="btn">📱 Tester la notification Telegram</a>
+        <a href="/test/pronote" class="btn green">🎓 Tester la connexion Pronote</a>
         <div id="result"></div>
-
         <script>
             document.querySelectorAll('.btn').forEach(btn => {
                 btn.addEventListener('click', async function(e) {
                     e.preventDefault();
-                    const url = this.getAttribute('href');
-                    const res = document.getElementById('result');
+                    const url  = this.getAttribute('href');
+                    const res  = document.getElementById('result');
+                    const orig = this.textContent;
                     res.style.display = 'none';
                     this.textContent = '⏳ Test en cours...';
-                    const btn = this;
+                    const self = this;
                     try {
-                        const r = await fetch(url);
+                        const r    = await fetch(url);
                         const data = await r.json();
-                        res.className = data.ok ? 'ok' : 'err';
+                        res.className   = data.ok ? 'ok' : 'err';
                         res.textContent = data.message;
                         res.style.display = 'block';
                     } catch(err) {
-                        res.className = 'err';
+                        res.className   = 'err';
                         res.textContent = 'Erreur réseau : ' + err;
                         res.style.display = 'block';
                     }
-                    btn.textContent = btn.href.includes('telegram') ? '📱 Tester la notification Telegram' : '🎓 Tester la connexion Pronote';
+                    self.textContent = orig;
                 });
             });
         </script>
@@ -348,9 +399,11 @@ def index():
     </html>
     """, 200
 
+
 @app.route("/health")
 def health():
     return {"status": "healthy"}, 200
+
 
 @app.route("/test/telegram")
 def test_telegram():
@@ -368,6 +421,7 @@ def test_telegram():
     except Exception as e:
         return {"ok": False, "message": f"❌ Erreur : {str(e)}"}, 500
 
+
 @app.route("/test/pronote")
 def test_pronote():
     try:
@@ -375,8 +429,7 @@ def test_pronote():
         client = pronotepy.Client.token_login(**creds)
         if not client.logged_in:
             return {"ok": False, "message": "❌ Connexion Pronote échouée — token invalide."}, 500
-        name = client.info.name
-        return {"ok": True, "message": f"✅ Connecté à Pronote en tant que : {name}"}, 200
+        return {"ok": True, "message": f"✅ Connecté à Pronote en tant que : {client.info.name}"}, 200
     except Exception as e:
         return {"ok": False, "message": f"❌ Erreur Pronote : {str(e)}"}, 500
 
