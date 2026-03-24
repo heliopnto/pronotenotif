@@ -27,7 +27,11 @@ from flask import Flask
 # ─────────────────────────────────────────────
 
 TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT_IDS = [
+    cid.strip()
+    for cid in os.environ.get("TELEGRAM_CHAT_IDS", os.environ.get("TELEGRAM_CHAT_ID", "")).split(",")
+    if cid.strip()
+]
 RENDER_API_KEY    = os.environ.get("RENDER_API_KEY", "")
 RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "")
 CHECK_INTERVAL    = 60
@@ -150,26 +154,22 @@ def format_date_fr(d: date) -> str:
 # ─────────────────────────────────────────────
 
 def send_notification(message: str):
-    """Envoie un message Telegram (HTML, emojis, CarPlay natif)."""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID manquant.")
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_IDS:
+        log.warning("TELEGRAM_TOKEN ou TELEGRAM_CHAT_IDS manquant.")
         return
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={
-                "chat_id":    TELEGRAM_CHAT_ID,
-                "text":       message,
-                "parse_mode": "HTML",
-            },
-            timeout=10
-        )
-        if r.status_code == 200:
-            log.info(f"📱 Telegram envoyé : {message[:60]}...")
-        else:
-            log.warning(f"Telegram erreur {r.status_code} : {r.text}")
-    except requests.RequestException as e:
-        log.error(f"Erreur Telegram : {e}")
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+                timeout=10
+            )
+            if r.status_code == 200:
+                log.info(f"Telegram envoyé à {chat_id} : {message[:60]}...")
+            else:
+                log.warning(f"Telegram erreur {r.status_code} pour {chat_id} : {r.text}")
+        except requests.RequestException as e:
+            log.error(f"Erreur Telegram ({chat_id}) : {e}")
 
 
 # ─────────────────────────────────────────────
