@@ -31,6 +31,7 @@ TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID", "")
 RENDER_API_KEY    = os.environ.get("RENDER_API_KEY", "")
 RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "")
 CHECK_INTERVAL    = 60
+_credentials_cache: dict = {}
 
 JOURS_FR = {
     "Monday":    "Lundi",
@@ -119,15 +120,20 @@ def update_render_env(key: str, value: str):
 
 
 def load_credentials() -> dict:
+    global _credentials_cache
+    if _credentials_cache:
+        return _credentials_cache
     raw = os.environ.get("PRONOTE_CREDENTIALS", "")
     if not raw:
         raise ValueError("Variable d'env PRONOTE_CREDENTIALS manquante !")
-    return json.loads(raw)
+    _credentials_cache = json.loads(raw)
+    return _credentials_cache
 
 
 def save_credentials(creds: dict):
+    global _credentials_cache
+    _credentials_cache = creds 
     update_render_env("PRONOTE_CREDENTIALS", json.dumps(creds))
-
 
 # ─────────────────────────────────────────────
 # HELPERS DATE
