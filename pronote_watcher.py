@@ -123,16 +123,33 @@ def load_credentials() -> dict:
     global _credentials_cache
     if _credentials_cache:
         return _credentials_cache
+
+    if RENDER_API_KEY and RENDER_SERVICE_ID:
+        try:
+            r = requests.get(
+                f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars/PRONOTE_CREDENTIALS",
+                headers={"Authorization": f"Bearer {RENDER_API_KEY}"},
+                timeout=10
+            )
+            if r.status_code == 200:
+                raw = r.json().get("value", "")
+                if raw:
+                    _credentials_cache = json.loads(raw)
+                    log.info("✅ Credentials chargés depuis l'API Render.")
+                    return _credentials_cache
+        except Exception as e:
+            log.warning(f"Impossible de lire credentials depuis Render API : {e}")
+
     raw = os.environ.get("PRONOTE_CREDENTIALS", "")
     if not raw:
         raise ValueError("Variable d'env PRONOTE_CREDENTIALS manquante !")
     _credentials_cache = json.loads(raw)
+    log.info("✅ Credentials chargés depuis os.environ (fallback).")
     return _credentials_cache
-
 
 def save_credentials(creds: dict):
     global _credentials_cache
-    _credentials_cache = creds 
+    _credentials_cache = creds
     update_render_env("PRONOTE_CREDENTIALS", json.dumps(creds))
 
 # ─────────────────────────────────────────────
