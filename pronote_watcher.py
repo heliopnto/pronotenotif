@@ -328,6 +328,18 @@ def _watcher_loop_inner():
                     break
         time.sleep(CHECK_INTERVAL)
 
+def self_ping():
+    port = os.environ.get("PORT", "10000")
+    url  = f"http://localhost:{port}/health"
+    time.sleep(30)
+    while True:
+        try:
+            r = requests.get(url, timeout=5)
+            log.info(f"🏓 Self-ping OK ({r.status_code})")
+        except Exception as e:
+            log.warning(f"Self-ping échoué : {e}")
+        time.sleep(300)
+
 
 # ─────────────────────────────────────────────
 # DÉMARRAGE DU THREAD
@@ -348,6 +360,9 @@ def start_watcher():
     t = threading.Thread(target=watcher_loop, daemon=True)
     t.start()
     log.info("🚀 Thread de surveillance démarré.")
+    p = threading.Thread(target=self_ping, daemon=True)
+    p.start()
+    log.info("🏓 Thread self-ping démarré.")
 
 
 # Démarre dès le chargement du module (compatible gunicorn)
